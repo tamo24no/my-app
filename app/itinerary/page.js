@@ -8,13 +8,16 @@ import { onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from
 const Itinerary = () => {
   const [itinerary, setItinerary] = useState([]);
   const [currentStep, setCurrentStep] = useState(null);
+  const [lastDrawnStep, setLastDrawnStep] = useState(null);
   const [user, setUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
-  const [nextStepReady, setNextStepReady] = useState(false);
   const [isRolling, setIsRolling] = useState(false);
+  const [displayStep, setDisplayStep] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [isNextStepUnlocked, setIsNextStepUnlocked] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
 
-  // 🔹 Firestore から旅程データをリアルタイム取得
+  // Firestore から旅程データをリアルタイム取得
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "itinerary"), (snapshot) => {
       const itineraryData = snapshot.docs.map((doc) => ({
@@ -24,15 +27,24 @@ const Itinerary = () => {
       itineraryData.sort((a, b) => parseInt(a.id) - parseInt(b.id));
       setItinerary(itineraryData);
 
-      // 進行状況を取得
+      // 進行状況を復元
       getDoc(doc(db, "appState", "progress")).then((progressSnap) => {
         if (progressSnap.exists()) {
           const progressData = progressSnap.data();
           const lastStep = itineraryData.find((step) => step.id === progressData.lastDrawnStep);
+
           if (lastStep) {
+            setLastDrawnStep(lastStep);
             setCurrentStep(lastStep);
-            setNextStepReady(true);
+            setDisplayStep(lastStep);
+            setHistory(itineraryData.slice(0, parseInt(lastStep.id)));
+            checkNextStep(itineraryData, lastStep);
           }
+        } else {
+          const firstStep = itineraryData.find((step) => step.isUnlocked);
+          setCurrentStep(firstStep);
+          setDisplayStep(firstStep);
+          checkNextStep(itineraryData, firstStep);
         }
       });
     });
@@ -40,37 +52,31 @@ const Itinerary = () => {
     return () => unsubscribe();
   }, []);
 
-  // 🔹 ユーザー情報を取得
+  // ユーザー情報を取得
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
         await checkAdmin(currentUser.email);
-      } else {
-        setIsAdmin(false);
       }
     });
-    return () => unsubscribeAuth();
+    return () => unsubscribe();
   }, []);
 
-  // 🔹 Firestore で管理者かどうかを確認
+  // Firestore で管理者かどうかを確認
   const checkAdmin = async (email) => {
-    try {
-      const adminRef = doc(db, "admins", email);
-      const adminSnap = await getDoc(adminRef);
-      setIsAdmin(adminSnap.exists());
-    } catch (error) {
-      console.error("管理者チェックエラー:", error);
-      setIsAdmin(false);
-    }
+    const querySnapshot = await getDocs(collection(db, "admins"));
+    const adminEmails = querySnapshot.docs.map((doc) => doc.id);
+    setIsAdmin(adminEmails.includes(email));
   };
 
-  // 🔹 チェックが入った中で「一番下の旅程」を取得
-  const getLastUnlockedStep = () => {
-    return itinerary.filter(step => step.isUnlocked).pop() || null;
+  // 次の行程が開放されているかチェック
+  const checkNextStep = (itineraryData, current) => {
+    const nextStep = itineraryData.find((step) => parseInt(step.id) === parseInt(current?.id) + 1);
+    setIsNextStepUnlocked(nextStep ? nextStep.isUnlocked : false);
   };
 
-  // 🔹 Googleログイン処理
+  // Googleログイン処理
   const handleLogin = async () => {
     const provider = new GoogleAuthProvider();
     try {
@@ -80,7 +86,7 @@ const Itinerary = () => {
     }
   };
 
-  // 🔹 ログアウト処理
+  // ログアウト処理
   const handleLogout = async () => {
     try {
       await signOut(auth);
@@ -91,36 +97,34 @@ const Itinerary = () => {
     }
   };
 
-  // 🔹 行程を開放・閉鎖する（管理者）
+  // 行程を開放・閉鎖する（管理者）
   const toggleStepUnlock = async (stepId, isUnlocked) => {
-    if (!isAdmin) {
-      setErrorMessage("管理者権限がありません！");
-      return;
-    }
-
+    if (!isAdmin) return;
     try {
       const docRef = doc(db, "itinerary", stepId);
       await updateDoc(docRef, { isUnlocked: !isUnlocked });
 
-      setItinerary((prev) =>
-        prev.map((step) => (step.id === stepId ? { ...step, isUnlocked: !isUnlocked } : step))
-      );
-
-      const lastUnlockedStep = getLastUnlockedStep();
-      setCurrentStep(lastUnlockedStep);
-      setNextStepReady(true);
+      if (!isUnlocked) {
+        setIsNextStepUnlocked(true);
+      } else {
+        const lastUnlockedStep = itinerary
+          .filter((step) => step.isUnlocked)
+          .sort((a, b) => parseInt(a.id) - parseInt(b.id))
+          .pop();
+        setCurrentStep(lastUnlockedStep);
+        setDisplayStep(lastUnlockedStep);
+      }
     } catch (error) {
       console.error("Firestore の更新に失敗しました:", error);
       setErrorMessage("Firestore の更新に失敗しました。権限を確認してください。");
     }
   };
 
-  // 🔹 くじ引き（ランダムっぽいモーション付き）
+  // くじ引き（ランダム風アニメーション）
   const revealNextStep = async () => {
-    if (isRolling || !nextStepReady) return;
+    if (isRolling || !currentStep) return;
 
-    const lastUnlocked = getLastUnlockedStep();
-    if (!lastUnlocked) {
+    if (!isNextStepUnlocked) {
       setErrorMessage("※次の行程が開放されていません！！！");
       setTimeout(() => setErrorMessage(""), 3000);
       return;
@@ -130,92 +134,57 @@ const Itinerary = () => {
     setErrorMessage("");
 
     let counter = 0;
-    const maxFlips = 20;
+    const maxFlips = 40;
 
     const interval = setInterval(() => {
       const randomStep = itinerary[Math.floor(Math.random() * itinerary.length)];
-      setCurrentStep(randomStep);
+      setDisplayStep(randomStep);
 
       counter++;
       if (counter > maxFlips) {
         clearInterval(interval);
 
         setTimeout(async () => {
-          setCurrentStep(lastUnlocked);
-          setNextStepReady(false);
-          setIsRolling(false);
+          const nextStep = itinerary.find((step) => step.isUnlocked);
+          if (nextStep) {
+            setHistory((prev) => [...prev, nextStep]);
+            setDisplayStep(nextStep);
+            setCurrentStep(nextStep);
+            setLastDrawnStep(nextStep);
+            checkNextStep(itinerary, nextStep);
 
-          try {
-            await setDoc(doc(db, "appState", "progress"), { lastDrawnStep: lastUnlocked.id });
-          } catch (error) {
-            console.error("Firestore 保存エラー:", error);
+            try {
+              await setDoc(doc(db, "appState", "progress"), { lastDrawnStep: nextStep.id });
+            } catch (error) {
+              console.error("Firestore 保存エラー:", error);
+            }
           }
-        }, 500);
+          setIsRolling(false);
+        }, 200);
       }
-    }, 80);
+    }, 50);
   };
 
   return (
     <div style={{ textAlign: "center", marginTop: "20px" }}>
-      <h1 style={{ fontSize: "2rem", fontWeight: "bold", color: "#fff", marginBottom: "20px" }}>
-        旅行のくじ引き 🎟️
-      </h1>
+      <h1>旅行のくじ引き 🎟️</h1>
 
       {!user ? (
-        <div>
-          <p>ログインしてください！</p>
-          <button onClick={handleLogin} style={{ padding: "10px", fontSize: "16px" }}>
-            Googleでログイン
-          </button>
-        </div>
+        <button onClick={handleLogin}>Googleでログイン</button>
       ) : (
-        <div>
-          {currentStep && (
-            <div style={{ padding: "20px", background: "white", borderRadius: "10px", fontSize: "24px", fontWeight: "bold", color: "black" }}>
-              {currentStep.title}
-            </div>
-          )}
-
-          <button 
-            onClick={revealNextStep} 
-            style={{
-              marginTop: "20px", 
-              padding: "10px", 
-              fontSize: "18px", 
-              background: "#4CAF50", 
-              color: "white", 
-              opacity: nextStepReady ? "1" : "0.6", 
-              cursor: nextStepReady ? "pointer" : "not-allowed"
-            }}
-            disabled={!nextStepReady || isRolling}
-          >
-            {isRolling ? "くじを引いています..." : "くじを引く 🎲"}
-          </button>
-
-          {errorMessage && <p style={{ color: "red", fontSize: "18px", marginTop: "10px" }}>{errorMessage}</p>}
-
-          <button onClick={handleLogout} style={{ marginTop: "10px", padding: "10px", fontSize: "16px", background: "#FF6347", color: "white" }}>
-            ログアウト
-          </button>
-        </div>
-      )}
-
-      {user && isAdmin && (
-        <div style={{ marginTop: "30px", textAlign: "left", color: "white" }}>
-          <h2>🛠 管理者メニュー</h2>
-          {itinerary.map((step) => (
+        <>
+          {displayStep && <div>{displayStep.title}</div>}
+          <button onClick={revealNextStep}>くじを引く 🎲</button>
+          <button onClick={handleLogout}>ログアウト</button>
+          {isAdmin && itinerary.map((step) => (
             <div key={step.id}>
               <label>
-                <input
-                  type="checkbox"
-                  checked={step.isUnlocked}
-                  onChange={() => toggleStepUnlock(step.id, step.isUnlocked)}
-                />
+                <input type="checkbox" checked={step.isUnlocked} onChange={() => toggleStepUnlock(step.id, step.isUnlocked)} />
                 {step.title}（開放状況）
               </label>
             </div>
           ))}
-        </div>
+        </>
       )}
     </div>
   );
