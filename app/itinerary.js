@@ -14,18 +14,19 @@ const Itinerary = () => {
   // Firestore から旅程を取得
   useEffect(() => {
     const fetchItinerary = async () => {
-      const querySnapshot = await getDocs(collection(db, "itinerary"));
-      const itineraryData = querySnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-      itineraryData.sort((a, b) => parseInt(a.id) - parseInt(b.id)); // 順番通りに並べる
-      setItinerary(itineraryData);
-      setCurrentStep(itineraryData.find((step) => step.isUnlocked));
+      if (typeof window !== "undefined") {  // ← サーバーサイドで実行されないようにチェック
+        const querySnapshot = await getDocs(collection(db, "itinerary"));
+        const itineraryData = querySnapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setItinerary(itineraryData);
+      }
     };
-
+  
     fetchItinerary();
   }, []);
+  
 
   // ユーザー情報を取得
   useEffect(() => {
